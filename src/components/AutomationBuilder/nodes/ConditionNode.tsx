@@ -3,7 +3,7 @@ import { GitFork } from "lucide-react";
 
 export interface ConditionNodeData {
   label: string;
-  matchType: "contains" | "exact" | "regex";
+  matchType: "contains" | "exact" | "regex" | "starts_with";
   value: string;
 }
 

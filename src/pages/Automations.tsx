@@ -2,7 +2,9 @@ import { useEffect, useState } from "react";
 import { Link } from "react-router-dom";
 import { DashboardLayout } from "../components/Layout/DashboardLayout";
 import { supabase } from "../lib/supabaseClient";
-import { Plus, Pause, Play, Workflow } from "lucide-react";
+import { Plus, Pause, Play, Workflow, X, LayoutTemplate } from "lucide-react";
+import { AUTOMATION_TEMPLATES, blankFlow } from "../lib/templates";
+import { automationNameSchema } from "../lib/validation";
 
 interface Automation {
   id: string;
@@ -16,6 +18,7 @@ interface Automation {
 export default function Automations() {
   const [automations, setAutomations] = useState<Automation[]>([]);
   const [loading, setLoading] = useState(true);
+  const [showTemplates, setShowTemplates] = useState(false);
 
   const load = async () => {
     const { data } = await supabase
@@ -30,16 +33,23 @@ export default function Automations() {
     load();
   }, []);
 
-  const createAutomation = async () => {
+  const createAutomation = async (templateKey?: string) => {
+    const template = AUTOMATION_TEMPLATES.find((t) => t.key === templateKey);
+    const flow = template ? { nodes: template.nodes, edges: template.edges } : blankFlow();
+    const name = automationNameSchema.safeParse(template?.name ?? "Untitled automation");
+
     const { data, error } = await supabase
       .from("automations")
       .insert({
-        name: "Untitled automation",
-        platform: "instagram",
-        trigger_type: "comment_keyword",
+        name: name.success ? name.data : "Untitled automation",
+        platform: template?.platform ?? "instagram",
+        trigger_type: template?.triggerType ?? "comment_keyword",
+        flow_definition: flow,
+        template_key: templateKey ?? null,
       })
       .select("id")
       .single();
+
     if (!error && data) {
       window.location.href = `/automations/${data.id}`;
     }
@@ -59,19 +69,27 @@ export default function Automations() {
             <h1 className="font-display text-2xl font-semibold text-ivory">Automations</h1>
             <p className="text-mute mt-1">Drag-and-drop flows that run on your connected accounts.</p>
           </div>
-          <button
-            onClick={createAutomation}
-            className="flex items-center gap-2 px-4 py-2.5 rounded-node bg-violet text-white text-sm font-medium hover:bg-violet-soft transition-colors"
-          >
-            <Plus size={16} /> New automation
-          </button>
+          <div className="flex items-center gap-2">
+            <button
+              onClick={() => setShowTemplates(true)}
+              className="flex items-center gap-2 px-4 py-2.5 rounded-node border border-line text-ivory text-sm hover:border-violet-soft transition-colors"
+            >
+              <LayoutTemplate size={16} /> Templates
+            </button>
+            <button
+              onClick={() => createAutomation()}
+              className="flex items-center gap-2 px-4 py-2.5 rounded-node bg-violet text-white text-sm font-medium hover:bg-violet-soft transition-colors"
+            >
+              <Plus size={16} /> New automation
+            </button>
+          </div>
         </div>
 
         <div className="mt-8 space-y-3">
           {!loading && automations.length === 0 && (
             <div className="p-8 rounded-node border border-dashed border-line text-center text-mute">
               <Workflow className="mx-auto mb-3 text-mute" />
-              No automations yet. Create your first one to get started.
+              No automations yet. Start from a template or create one from scratch.
             </div>
           )}
 
@@ -99,6 +117,39 @@ export default function Automations() {
           ))}
         </div>
       </div>
+
+      {showTemplates && (
+        <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-50 p-4">
+          <div className="bg-panel border border-line rounded-node max-w-2xl w-full max-h-[80vh] overflow-y-auto">
+            <div className="flex items-center justify-between p-5 border-b border-line sticky top-0 bg-panel">
+              <h2 className="font-display text-lg font-semibold text-ivory">Start from a template</h2>
+              <button onClick={() => setShowTemplates(false)} className="text-mute hover:text-ivory">
+                <X size={20} />
+              </button>
+            </div>
+            <div className="p-5 grid sm:grid-cols-2 gap-3">
+              <button
+                onClick={() => createAutomation()}
+                className="text-left p-4 rounded-node border border-dashed border-line hover:border-violet-soft transition-colors"
+              >
+                <div className="text-ivory font-medium text-sm">Blank automation</div>
+                <div className="text-xs text-mute mt-1">Start from scratch</div>
+              </button>
+              {AUTOMATION_TEMPLATES.map((t) => (
+                <button
+                  key={t.key}
+                  onClick={() => createAutomation(t.key)}
+                  className="text-left p-4 rounded-node border border-line hover:border-violet-soft transition-colors"
+                >
+                  <div className="text-ivory font-medium text-sm">{t.name}</div>
+                  <div className="text-xs text-mute mt-1">{t.description}</div>
+                  <div className="text-xs text-violet-soft mt-2 capitalize">{t.platform}</div>
+                </button>
+              ))}
+            </div>
+          </div>
+        </div>
+      )}
     </DashboardLayout>
   );
 }

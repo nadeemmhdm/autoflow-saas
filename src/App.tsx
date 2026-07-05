@@ -13,6 +13,7 @@ import ApiKeys from "./pages/ApiKeys";
 import Settings from "./pages/Settings";
 import AdminPanel from "./pages/AdminPanel";
 import OAuthCallback from "./pages/OAuthCallback";
+import Inbox from "./pages/Inbox";
 
 export default function App() {
   return (
@@ -27,6 +28,7 @@ export default function App() {
           <Route path="/dashboard" element={<ProtectedRoute><Dashboard /></ProtectedRoute>} />
           <Route path="/automations" element={<ProtectedRoute><Automations /></ProtectedRoute>} />
           <Route path="/automations/:id" element={<ProtectedRoute><AutomationBuilderPage /></ProtectedRoute>} />
+          <Route path="/inbox" element={<ProtectedRoute><Inbox /></ProtectedRoute>} />
           <Route path="/accounts" element={<ProtectedRoute><ConnectAccounts /></ProtectedRoute>} />
           <Route path="/api-keys" element={<ProtectedRoute><ApiKeys /></ProtectedRoute>} />
           <Route path="/settings" element={<ProtectedRoute><Settings /></ProtectedRoute>} />

@@ -2,8 +2,7 @@ import { createClient } from "npm:@supabase/supabase-js@2";
 import { verifyMetaSignature } from "./_shared/crypto.ts";
 import { runAutomationsForEvent } from "./_shared/processAutomations.ts";
 
-// Same trust model as meta-webhook: GET handshake + HMAC signature on POST.
-// verify_jwt=false because WhatsApp calls this directly.
+const MAX_EVENT_AGE_SECONDS = 5 * 60;
 
 Deno.serve(async (req: Request) => {
   const url = new URL(req.url);
@@ -26,7 +25,7 @@ Deno.serve(async (req: Request) => {
 
   const rawBody = await req.text();
   const signature = req.headers.get("X-Hub-Signature-256");
-  const appSecret = Deno.env.get("META_APP_SECRET")!; // WhatsApp Cloud API signs with the same Meta App Secret
+  const appSecret = Deno.env.get("META_APP_SECRET")!;
 
   const valid = await verifyMetaSignature(rawBody, signature, appSecret);
   if (!valid) {
@@ -37,23 +36,32 @@ Deno.serve(async (req: Request) => {
   const payload = JSON.parse(rawBody);
   const db = createClient(Deno.env.get("SUPABASE_URL")!, Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!);
 
-  await db.from("webhook_events").insert({
-    platform: "whatsapp",
-    event_type: "message",
-    payload,
-  });
-
   try {
     for (const entry of payload.entry ?? []) {
       for (const change of entry.changes ?? []) {
         const value = change.value;
         const phoneNumberId = value?.metadata?.phone_number_id;
+
         for (const message of value?.messages ?? []) {
+          if (message.timestamp) {
+            const ageSeconds = Date.now() / 1000 - Number(message.timestamp);
+            if (ageSeconds > MAX_EVENT_AGE_SECONDS) {
+              console.warn(`Dropping stale WhatsApp message, age=${ageSeconds}s`);
+              continue;
+            }
+          }
+
+          const eventId = message.id ?? null;
+          if (eventId && (await alreadyProcessed(db, eventId))) continue;
+          await db.from("webhook_events").insert({ platform: "whatsapp", event_type: "message", payload, event_id: eventId });
+
           if (message.type === "text") {
+            const contactName = value.contacts?.find((c: any) => c.wa_id === message.from)?.profile?.name;
             await runAutomationsForEvent({
               platform: "whatsapp",
               externalAccountId: phoneNumberId,
               senderId: message.from,
+              senderName: contactName,
               text: message.text.body,
               eventKind: "dm",
             });
@@ -67,3 +75,13 @@ Deno.serve(async (req: Request) => {
 
   return new Response("EVENT_RECEIVED", { status: 200 });
 });
+
+async function alreadyProcessed(db: any, eventId: string): Promise<boolean> {
+  const { data } = await db
+    .from("webhook_events")
+    .select("id")
+    .eq("platform", "whatsapp")
+    .eq("event_id", eventId)
+    .maybeSingle();
+  return !!data;
+}

@@ -16,7 +16,8 @@ import "reactflow/dist/style.css";
 import { TriggerNode } from "./nodes/TriggerNode";
 import { ConditionNode } from "./nodes/ConditionNode";
 import { ActionNode } from "./nodes/ActionNode";
-import { Zap, GitFork, Send, Image, Link as LinkIcon, Clock } from "lucide-react";
+import { Zap, GitFork, Send, Image, Link as LinkIcon, Clock, UserCheck } from "lucide-react";
+import { validateOutgoingUrl } from "../../lib/validation";
 
 const nodeTypes = {
   trigger: TriggerNode,
@@ -32,6 +33,7 @@ const paletteItems = [
   { type: "action", label: "Send image", icon: Image, defaults: { label: "Send image", actionType: "send_image" } },
   { type: "action", label: "Send link", icon: LinkIcon, defaults: { label: "Send link", actionType: "send_link" } },
   { type: "action", label: "Delay", icon: Clock, defaults: { label: "Wait", actionType: "delay", seconds: 30 } },
+  { type: "action", label: "Human handoff", icon: UserCheck, defaults: { label: "Hand off to human", actionType: "human_handoff" } },
 ];
 
 let idCounter = 1;
@@ -48,6 +50,7 @@ function Builder({ initialNodes = [], initialEdges = [], onChange }: FlowBuilder
   const [edges, setEdges, onEdgesChange] = useEdgesState(initialEdges);
   const wrapperRef = useRef<HTMLDivElement>(null);
   const [rfInstance, setRfInstance] = useState<ReactFlowInstance | null>(null);
+  const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null);
 
   const emitChange = useCallback(
     (n: Node[], e: Edge[]) => onChange(n, e),
@@ -91,6 +94,29 @@ function Builder({ initialNodes = [], initialEdges = [], onChange }: FlowBuilder
     [rfInstance, edges, setNodes, emitChange]
   );
 
+  const updateSelectedNodeData = (patch: Record<string, unknown>) => {
+    setNodes((nds) => {
+      const next = nds.map((n) => (n.id === selectedNodeId ? { ...n, data: { ...n.data, ...patch } } : n));
+      emitChange(next, edges);
+      return next;
+    });
+  };
+
+  const deleteSelectedNode = () => {
+    setNodes((nds) => {
+      const next = nds.filter((n) => n.id !== selectedNodeId);
+      setEdges((eds) => {
+        const nextEdges = eds.filter((e) => e.source !== selectedNodeId && e.target !== selectedNodeId);
+        emitChange(next, nextEdges);
+        return nextEdges;
+      });
+      return next;
+    });
+    setSelectedNodeId(null);
+  };
+
+  const selectedNode = nodes.find((n) => n.id === selectedNodeId);
+
   return (
     <div className="flex h-full">
       {/* Palette */}
@@ -124,6 +150,8 @@ function Builder({ initialNodes = [], initialEdges = [], onChange }: FlowBuilder
           }}
           onConnect={onConnect}
           onInit={setRfInstance}
+          onNodeClick={(_, node) => setSelectedNodeId(node.id)}
+          onPaneClick={() => setSelectedNodeId(null)}
           nodeTypes={nodeTypes}
           fitView
           proOptions={{ hideAttribution: true }}
@@ -133,6 +161,88 @@ function Builder({ initialNodes = [], initialEdges = [], onChange }: FlowBuilder
           <MiniMap nodeColor="#2E2E40" maskColor="rgba(18,18,26,0.7)" />
         </ReactFlow>
       </div>
+
+      {/* Property panel */}
+      {selectedNode && (
+        <div className="w-72 shrink-0 border-l border-line bg-panel p-4 space-y-4 overflow-y-auto">
+          <div className="flex items-center justify-between">
+            <p className="text-xs uppercase tracking-wide text-mute">Edit {selectedNode.type}</p>
+            <button onClick={deleteSelectedNode} className="text-xs text-coral hover:underline">Delete</button>
+          </div>
+
+          <div>
+            <label className="block text-xs text-mute mb-1">Label</label>
+            <input
+              value={selectedNode.data.label ?? ""}
+              onChange={(e) => updateSelectedNodeData({ label: e.target.value })}
+              className="w-full px-2.5 py-2 rounded-node bg-panel2 border border-line text-sm text-ivory outline-none focus:border-violet-soft"
+            />
+          </div>
+
+          {selectedNode.type === "condition" && (
+            <>
+              <div>
+                <label className="block text-xs text-mute mb-1">Match type</label>
+                <select
+                  value={selectedNode.data.matchType}
+                  onChange={(e) => updateSelectedNodeData({ matchType: e.target.value })}
+                  className="w-full px-2.5 py-2 rounded-node bg-panel2 border border-line text-sm text-ivory"
+                >
+                  <option value="contains">Contains</option>
+                  <option value="exact">Exact match</option>
+                  <option value="starts_with">Starts with</option>
+                  <option value="regex">Regex</option>
+                </select>
+              </div>
+              <div>
+                <label className="block text-xs text-mute mb-1">Keyword / value</label>
+                <input
+                  value={selectedNode.data.value ?? ""}
+                  onChange={(e) => updateSelectedNodeData({ value: e.target.value })}
+                  maxLength={200}
+                  className="w-full px-2.5 py-2 rounded-node bg-panel2 border border-line text-sm text-ivory outline-none focus:border-violet-soft"
+                />
+              </div>
+            </>
+          )}
+
+          {selectedNode.type === "action" && selectedNode.data.actionType !== "human_handoff" && selectedNode.data.actionType !== "delay" && (
+            <div>
+              <label className="block text-xs text-mute mb-1">
+                {selectedNode.data.actionType === "send_link" ? "Link URL" : "Message"}
+              </label>
+              <textarea
+                value={selectedNode.data.content ?? ""}
+                onChange={(e) => updateSelectedNodeData({ content: e.target.value })}
+                rows={4}
+                maxLength={2000}
+                className="w-full px-2.5 py-2 rounded-node bg-panel2 border border-line text-sm text-ivory outline-none focus:border-violet-soft"
+              />
+              <p className="text-[11px] text-mute mt-1">{(selectedNode.data.content ?? "").length}/2000</p>
+              {selectedNode.data.actionType === "send_link" && selectedNode.data.content && (() => {
+                const check = validateOutgoingUrl(selectedNode.data.content);
+                return !check.ok ? <p className="text-[11px] text-coral mt-1">{check.reason}</p> : null;
+              })()}
+            </div>
+          )}
+
+          {selectedNode.type === "action" && selectedNode.data.actionType === "delay" && (
+            <div>
+              <label className="block text-xs text-mute mb-1">Delay (seconds)</label>
+              <input
+                type="number" min={1} max={3600}
+                value={selectedNode.data.seconds ?? 30}
+                onChange={(e) => updateSelectedNodeData({ seconds: Number(e.target.value) })}
+                className="w-full px-2.5 py-2 rounded-node bg-panel2 border border-line text-sm text-ivory outline-none focus:border-violet-soft"
+              />
+            </div>
+          )}
+
+          {selectedNode.type === "action" && selectedNode.data.actionType === "human_handoff" && (
+            <p className="text-xs text-mute">This pauses automation for the contact so a person can take over in the Inbox.</p>
+          )}
+        </div>
+      )}
     </div>
   );
 }

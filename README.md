@@ -16,13 +16,52 @@ A Supabase project has been provisioned for you:
 
 - **Project ref:** `krvtztfmeyznmglelwfr`
 - **Project URL:** `https://krvtztfmeyznmglelwfr.supabase.co`
-- **Database:** 7 tables, all with Row Level Security enabled (see `supabase/migrations/001_init_core_schema.sql`)
+- **Database:** 8 tables (see `supabase/migrations/`), every one with Row Level Security enabled
 - **Edge Functions deployed:**
   - `oauth-callback` — exchanges Meta's OAuth code for a token, encrypts it, stores it
-  - `meta-webhook` — receives Instagram/Facebook comment & DM events
-  - `whatsapp-webhook` — receives WhatsApp Cloud API messages
+  - `meta-webhook` — receives Instagram/Facebook comment & DM events, with replay/duplicate protection
+  - `whatsapp-webhook` — receives WhatsApp Cloud API messages, with the same protections
+  - `test-automation` — dry-run sandbox: simulate an event against a flow with no real send
+  - `check-permissions` — checks which Meta permissions are actually granted for a connected account
+  - `secrets-health` — admin-only check of which required secrets are configured (never reveals values)
 
 You still need to: create a Meta app, set several secrets, and run `npm install`.
+
+---
+
+## Feature set
+
+**Automation**
+- Drag-and-drop flow builder (trigger → condition → action), with a property
+  panel to edit keywords, match type (contains / exact / starts with / regex),
+  and message content per node
+- Ready-made templates: comment → DM, WhatsApp product info, FAQ bot, lead
+  capture, support escalation (acknowledge + human handoff)
+- **Testing sandbox** — simulate a comment/DM against your flow before going
+  live, no real messages sent, doesn't touch your rate limits
+- **Human handoff** action node — pauses automation for a specific contact
+  so a person can take over
+- **Conversation inbox** — every contact your automations have talked to,
+  with automation history, notes, and a pause/resume toggle
+- Per-automation **daily and hourly send limits**, plus a 20-second
+  per-contact cooldown to stop rapid-fire duplicate replies
+
+**Security**
+- Row Level Security on every table — one user can never see another's data
+- Access tokens encrypted (AES-256-GCM) before storage; never exposed via API
+- Webhook signature verification (`X-Hub-Signature-256`) on every inbound event
+- **Replay/duplicate protection** — event IDs are deduped via a unique index,
+  and stale events (>5 minutes old) are dropped
+- **Meta permission checker** — see exactly which permissions are granted vs.
+  missing for each connected account (Settings → Connected accounts)
+- **Secrets health check** (Admin panel) — confirms which Edge Function
+  secrets are configured, without ever showing their values
+- API keys are SHA-256 hashed, scoped (`logs:read`, `automations:write`, etc.),
+  and support expiry (30/90/365 days or never)
+- URL safety checks on "send link" actions — blocks `javascript:`,
+  non-http(s), and private/local addresses
+- RLS test suite in `supabase/tests/rls_test_suite.sql` (pgTAP) — verifies
+  cross-user isolation automatically; run with `supabase test db`
 
 ---
 
@@ -35,8 +74,7 @@ npm run dev
 ```
 
 The anon key in `.env.example` is already filled in and safe to use —
-every table it can reach is protected by RLS. It can never read encrypted
-tokens or webhook logs.
+every table it can reach is protected by RLS.
 
 ---
 
@@ -58,6 +96,7 @@ tokens or webhook logs.
    - `pages_show_list`, `pages_messaging`, `pages_manage_metadata`, `pages_read_engagement`
    - `instagram_basic`, `instagram_manage_messages`, `instagram_manage_comments`
    - These require **App Review** before they work for accounts other than your own test users — expect this step to take a few days with Meta. You can develop and test against your own Pages/IG account before review completes.
+   - Use the **permission checker** (Connected accounts page, shield icon) any time to confirm what's actually been granted.
 
 ### Configure the webhook in the Meta dashboard
 
@@ -108,43 +147,47 @@ supabase secrets set \
 `SUPABASE_URL` and `SUPABASE_SERVICE_ROLE_KEY` are injected automatically
 into Edge Functions by Supabase — you don't set those yourself.
 
+Check what's configured any time from **Admin → Secrets health** in the app
+(admin role required) — it reports configured/missing/looks-invalid per
+secret without ever showing the value.
+
 ---
 
 ## 5. Deploy the frontend
 
-Any static host works (Cloudflare Pages, Vercel, Netlify):
-
-```bash
-npm run build
-# upload the dist/ folder
-```
-
-Set `VITE_SUPABASE_URL`, `VITE_SUPABASE_ANON_KEY`, and `VITE_META_APP_ID`
-as environment variables on your host — the same three used in `.env`.
+See **[DEPLOY.md](./DEPLOY.md)** for step-by-step guides covering
+**Cloudflare Pages**, **Vercel**, and **Netlify** — pick whichever you
+prefer. Security headers (`_headers` / `vercel.json`) and SPA routing
+(`_redirects`) are already included in this repo for all three.
 
 ---
 
 ## How automations work
 
 1. Someone comments on your post or DMs you.
-2. Meta calls `meta-webhook` (or `whatsapp-webhook`), signed with your App Secret — the signature is verified before anything is trusted.
-3. The event is matched against your **active** automations for that account.
-4. If a condition node's keyword matches, the connected action node fires: a text reply, image, link, or a delay before the next action.
-5. Every attempt — success, failure, or rate-limited — is written to `automation_logs`, visible only to you via RLS.
+2. Meta calls `meta-webhook` (or `whatsapp-webhook`), signed with your App Secret — the signature is verified, the event's age is checked (events older than 5 minutes are dropped), and the event ID is deduped before anything runs.
+3. The event is matched against your **active** automations for that account, unless the contact's conversation is paused for human handoff or still in cooldown.
+4. If a condition node's keyword matches, the connected action node(s) fire — a text reply, image, link, delay, or a hand-off to a human. A single condition can fan out to more than one action (e.g. "acknowledge" + "hand off").
+5. Every attempt — success, failure, rate-limited, or skipped — is written to `automation_logs` and shows up against the contact's thread in the **Inbox**.
 
-Each automation has a **daily send limit** (default 500) to protect your
-account from Meta's spam/rate-limit flags. Adjust it per automation in the
-builder.
+Each automation has a **daily and hourly send limit** (defaults: 500/day,
+100/hour) to protect your account from Meta's spam/rate-limit flags, plus a
+20-second cooldown per contact. Adjust limits per automation in the builder.
+
+Use the **Test** button in the automation builder to simulate an event
+against your current flow before activating it — no real messages sent,
+doesn't touch your limits.
 
 ---
 
 ## Security model
 
 - **Row Level Security** on every table — one user can never query another user's data, even with the anon key.
-- **Access tokens are encrypted** (AES-256-GCM) before they're stored, using a key that only exists as an Edge Function secret. The database itself never holds a plaintext token, and the client-facing `social_accounts_safe` view never exposes the encrypted column.
-- **Webhook signature verification** — every inbound Meta/WhatsApp event is checked against `X-Hub-Signature-256` using your App Secret before it's processed. Requests that fail this check are rejected with 401.
-- **API keys** for the platform's own API are stored as SHA-256 hashes, never in plaintext. The raw key is shown to you exactly once at creation.
-- **Audit log** of security-relevant actions (account connections, etc.), readable by the account owner and admins only.
+- **Access tokens are encrypted** (AES-256-GCM) before they're stored, using a key that only exists as an Edge Function secret.
+- **Webhook signature verification + replay protection** — every inbound Meta/WhatsApp event is checked against `X-Hub-Signature-256`, stale events are dropped, and duplicate event IDs are rejected via a unique index.
+- **API keys** are stored as SHA-256 hashes with scopes and optional expiry, never in plaintext.
+- **Audit log** of security-relevant actions, readable by the account owner and admins only.
+- **RLS test suite** (`supabase/tests/rls_test_suite.sql`) — run `supabase test db` to verify cross-user isolation holds after any schema change.
 
 Self-hosting this means you are responsible for keeping your Supabase
 project, Meta App Secret, and encryption key secure. Rotate
@@ -156,16 +199,33 @@ suspect it's been exposed.
 ## Using this legally
 
 - Only connect accounts you own or have explicit authorization to manage.
-- Only use Meta's **official Graph API / WhatsApp Cloud API** — this project does not scrape, spoof, or use unofficial/reverse-engineered endpoints, and it never will. Doing so violates Meta's Platform Terms and can get accounts permanently banned.
+- Only use Meta's **official Graph API / WhatsApp Cloud API** — this project does not scrape, spoof, or use unofficial/reverse-engineered endpoints, and it never will.
 - Respect WhatsApp's messaging window rules (24-hour customer service window for free-form replies; use approved message templates outside that window).
 - Get consent before messaging people at scale, and follow your local data protection law (e.g. India's DPDP Act, GDPR if you have EU users) for how you store and process contact data.
 
 ---
 
+## Roadmap (not built yet)
+
+These were considered but intentionally left out of this beta to keep
+everything shipped actually working end-to-end, rather than half-stubbed:
+
+- CRM export (CSV/Sheets/HubSpot/Zoho), link click tracking, media library uploads
+- AI-suggested replies, multi-language auto-translation
+- Team roles/permissions, multi-workspace agency mode
+- WhatsApp approved-template manager, flow version history
+- Notification system (email/webhook alerts on failures)
+- IP allowlisting for API keys
+
+Contributions welcome — see the GitHub repo.
+
+---
+
 ## Open source
 
-This project is MIT licensed — see `LICENSE`. If you deploy it, keep the
-"Powered by AutoFlow" attribution in the footer (`src/components/Layout/Footer.tsx`)
-pointing at the source repository, per the license notice.
+MIT licensed — see `LICENSE`. If you deploy it, keep the "Powered by
+AutoFlow" attribution in the footer (`src/components/Layout/Footer.tsx`)
+as a courtesy — see `NOTICE.md`.
 
 Repo: https://github.com/nadeemmhdm/autoflow-saas
+

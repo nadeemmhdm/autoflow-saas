@@ -7,12 +7,14 @@ import {
   Settings,
   ShieldCheck,
   LogOut,
+  Inbox as InboxIcon,
 } from "lucide-react";
 import { useAuth } from "../../contexts/AuthContext";
 
 const navItems = [
   { to: "/dashboard", label: "Overview", icon: LayoutGrid },
   { to: "/automations", label: "Automations", icon: Workflow },
+  { to: "/inbox", label: "Inbox", icon: InboxIcon },
   { to: "/accounts", label: "Connected accounts", icon: Link2 },
   { to: "/api-keys", label: "API keys", icon: KeyRound },
   { to: "/settings", label: "Settings", icon: Settings },
